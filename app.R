@@ -201,7 +201,8 @@ compute_ratings <- function(df, leagues = NULL, gk_agg = NULL) {
     "shots",
     "shots_on_target",
     "xpass_completion_percentage",
-    "attempted_passes"
+    "attempted_passes",
+    "ga_interrupting_p96"
   )) {
     if (!col %in% names(df)) df[[col]] <- NA_real_
   }
@@ -293,7 +294,8 @@ compute_ratings <- function(df, leagues = NULL, gk_agg = NULL) {
       pct_p96 = pct_rank(passes_p96),
       pct_save = pct_rank(save_pct),
       pct_gp96 = pct_rank(goals_prevented_p96),
-      pct_sf96 = pct_rank(shots_faced_p96)
+      pct_sf96 = pct_rank(shots_faced_p96),
+      pct_int = pct_rank(ga_interrupting_p96)
     ) |>
     ungroup() |>
     mutate(
@@ -616,15 +618,15 @@ make_player_card <- function(row) {
     ),
     FB = list(
       list("xPass%", .fmt(row$xpass_pct, "%.0f%%"), row$pct_xp),
-      list("g+/96", .fmt(row$goals_added_p96, "%.3f"), row$pct_ga),
+      list("Int+/96", .fmt(row$ga_interrupting_p96, "%.3f"), row$pct_int),
       list("P/96", .fmt(row$passes_p96, "%.0f"), row$pct_p96),
       list("xG/96", .fmt(row$xgoals_p96, "%.2f"), row$pct_xg)
     ),
     CB = list(
-      list("g+/96", .fmt(row$goals_added_p96, "%.3f"), row$pct_ga),
+      list("Int+/96", .fmt(row$ga_interrupting_p96, "%.3f"), row$pct_int),
       list("xPass%", .fmt(row$xpass_pct, "%.0f%%"), row$pct_xp),
       list("P/96", .fmt(row$passes_p96, "%.0f"), row$pct_p96),
-      list("xG/96", .fmt(row$xgoals_p96, "%.2f"), row$pct_xg)
+      list("g+/96", .fmt(row$goals_added_p96, "%.3f"), row$pct_ga)
     ),
     GK = list(
       list("g+/96", .fmt(row$goals_added_p96, "%.3f"), row$pct_ga),

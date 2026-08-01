@@ -43,9 +43,12 @@ A rated, position-grouped card view built on top of the Aggregate Stats ("xGoals
 2. Scored on a 0–100 **composite** rating, computed from a different weighted blend of percentile ranks per position (see `compute_ratings()` in `app.R`):
    - **FW**: xG/96, g+/96, shot-on-target %, xPass%
    - **MF**: g+/96, xPass%, xG/96, passes/96
-   - **FB** / **CB**: g+/96, xPass%, passes/96, xG/96 (weighted differently between the two)
+   - **FB**: xPass%, g+/96, passes/96, xG/96
+   - **CB**: g+/96, xPass%, passes/96, xG/96
    - **GK**: g+/96, goals prevented/96, save %
 3. Ranked within their position group and rendered as a card showing the composite score, rank, and four key stat tiles with percentile coloring (green/yellow/red)
+
+The displayed tiles aren't always identical to the composite inputs above — FB and CB cards swap in `ga_interrupting_p96` ("Int+/96") as a defense-specific stat instead of always showing the flattened g+/96 total, since g+'s six action components (see below) let defenders be judged on the component that actually reflects defending rather than a blended on/off-ball score. CB leads with Int+/96; FB shows it as its second tile alongside xPass%, since fullback play still leans more attacking.
 
 ## Goals Added components
 
@@ -55,5 +58,4 @@ Every component also gets a `_p96` (per-96-minutes) counterpart — the same nor
 
 ## Known gaps
 
-- The Player Cards' FB and CB tiles currently show the same four stats (differing only in priority order) rather than pulling position-relevant g+ components (e.g. `ga_interrupting_p96` for CBs) — the data is available via the Aggregate Stats "Goals Added" table, just not wired into the card logic yet.
-- ASA doesn't expose raw defensive counting stats (tackles, interceptions, clearances, aerials) — g+'s `interrupting` component is the closest available proxy.
+- ASA doesn't expose raw defensive counting stats (tackles, interceptions, clearances, aerials) — g+'s `interrupting` component is the closest available proxy, which is why the CB/FB cards use it instead of anything more granular.
