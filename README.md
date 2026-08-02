@@ -58,6 +58,8 @@ ASA's Goals Added (g+) model scores every outfield player on the same set of on-
 
 Every component also gets a `_p96` (per-96-minutes) counterpart — the same normalization convention used throughout the app for `xgoals_p96`, `passes_p96`, etc. — since raw totals aren't comparable across players with different playing time.
 
+A component column is `NA`, not `0`, for any player whose role doesn't include that action type at all — e.g. `ga_sweeping` is blank for outfield players and `ga_dribbling` is blank for goalkeepers, since they're never evaluated on it in the first place. This mirrors how other position-specific stats (like `save_pct` for non-goalkeepers) already show blank rather than a misleading zero.
+
 ## Caching
 
 Fetching a full league/season roster from ASA is the slow part, so every ASA endpoint call is wrapped with [`memoise`](https://memoise.r-lib.org/) backed by an in-memory [`cachem::cache_mem()`](https://cachem.r-lib.org/) with a 6-hour TTL (`.memoize_asa()` in `app.R`). Memoization happens at the individual endpoint level (`get_player_xgoals`, `get_player_goals_added`, `get_players`, etc. — see the `cached` list near the top of `app.R`), not around the higher-level `fetch_agg()`/`fetch_games()` functions, so the cache is shared across tabs and stat types that hit the same underlying endpoint. Each endpoint gets its own dedicated cache instance rather than sharing one — memoise's cache-key hashing can't reliably distinguish between different endpoints' identically-shaped wrapper closures when they're called with the same arguments, so sharing a single cache risked one endpoint's result being served for another's request.

@@ -460,11 +460,17 @@ fetch_ga_totals <- function(leagues, seasons, by_game = FALSE) {
           .groups = "drop"
         )
 
+      # values_fill = NA (not 0): a missing (player, action_type) combo means
+      # that action type doesn't apply to this player's role at all (e.g. an
+      # outfield player has no "Shotstopping" rows, a goalkeeper has no
+      # "Dribbling" rows) — not that they were evaluated and scored exactly
+      # average. Filling with 0 would misrepresent "not applicable" as "zero
+      # value contributed."
       components <- raw |>
         mutate(ga_col = paste0("ga_", .slugify(action_type))) |>
         group_by(across(all_of(keys)), ga_col) |>
         summarise(value = sum(goals_added_above_avg, na.rm = TRUE), .groups = "drop") |>
-        pivot_wider(names_from = ga_col, values_from = value, values_fill = 0)
+        pivot_wider(names_from = ga_col, values_from = value, values_fill = NA_real_)
 
       component_cols <- setdiff(names(components), keys)
 
