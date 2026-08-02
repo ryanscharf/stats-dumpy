@@ -5,10 +5,53 @@ library(itscalledsoccer)
 library(dplyr)
 library(tidyr)
 library(DT)
+library(memoise)
+library(cachem)
 
 # --- helpers ------------------------------------------------------------------
 
+# In-memory caching, scoped per ASA endpoint, shared across all sessions of
+# this running app instance. Short TTL because ASA's underlying data changes
+# as games are played; a "Force Refresh" button (see UI) lets users bypass
+# it on demand.
+CACHE_TTL_SECONDS <- 6 * 60 * 60
+
 asa <- AmericanSoccerAnalysis$new()
+
+# Memoize at the level of individual ASA endpoints (not the higher-level
+# fetch_* functions) so the cache is shared across tabs/stat types that
+# hit the same endpoint with the same arguments.
+#
+# Each R6 method is wrapped in a plain `function(...)` closure before being
+# memoised, rather than memoising the bound method directly — memoise
+# introspects the wrapped function's formals to build the cache key, and
+# an R6 bound method's formals/environment confuse that (fails with
+# "argument \"names\" is missing" deep inside memoise's key hashing).
+#
+# Each endpoint gets its OWN cache instance rather than sharing one — the
+# wrapper closures below are textually identical (`function(...) fn(...)`)
+# across every endpoint, and memoise's cache-key hashing doesn't distinguish
+# between different closures with the same body/formals when called with
+# the same arguments. Sharing one cache caused get_teams() and get_players()
+# (both called with e.g. `leagues = list("usls")`) to collide onto the same
+# entry, silently serving one endpoint's result for the other.
+.memoize_asa <- function(fn) {
+  memoise::memoise(
+    function(...) fn(...),
+    cache = cachem::cache_mem(max_age = CACHE_TTL_SECONDS, max_size = 500 * 1024^2)
+  )
+}
+
+cached <- list(
+  get_player_xgoals = .memoize_asa(asa$get_player_xgoals),
+  get_player_xpass = .memoize_asa(asa$get_player_xpass),
+  get_goalkeeper_xgoals = .memoize_asa(asa$get_goalkeeper_xgoals),
+  get_player_goals_added = .memoize_asa(asa$get_player_goals_added),
+  get_goalkeeper_goals_added = .memoize_asa(asa$get_goalkeeper_goals_added),
+  get_player_salaries = .memoize_asa(asa$get_player_salaries),
+  get_players = .memoize_asa(asa$get_players),
+  get_teams = .memoize_asa(asa$get_teams)
+)
 
 LEAGUES <- c(
   "MLS" = "mls",
@@ -86,21 +129,28 @@ valid_seasons_for <- function(leagues) {
   seasons[order(substr(seasons, 1, 4), decreasing = TRUE)]
 }
 
-player_args <- function(leagues, seasons, min_minutes) {
+player_args <- function(leagues, seasons) {
   list(
     leagues = as.list(leagues),
     season_name = if (length(seasons) == 0) NULL else as.list(seasons),
-    minimum_minutes = as.integer(min_minutes),
+    minimum_minutes = 0L,
     split_by_seasons = TRUE,
     split_by_teams = TRUE
   )
+}
+
+apply_min_minutes <- function(df, min_minutes) {
+  if (is.null(df) || !"minutes_played" %in% names(df)) {
+    return(df)
+  }
+  filter(df, minutes_played >= min_minutes)
 }
 
 attach_names <- function(df, leagues) {
   leagues_arg <- as.list(leagues)
 
   if ("player_id" %in% names(df)) {
-    players <- asa$get_players(leagues = leagues_arg)
+    players <- cached$get_players(leagues = leagues_arg)
     if (!is.null(players) && nrow(players) > 0) {
       cols <- intersect(
         c(
@@ -117,7 +167,7 @@ attach_names <- function(df, leagues) {
   }
 
   if ("team_id" %in% names(df)) {
-    teams <- asa$get_teams(leagues = leagues_arg)
+    teams <- cached$get_teams(leagues = leagues_arg)
     if (
       !is.null(teams) &&
         nrow(teams) > 0 &&
@@ -160,7 +210,7 @@ pct_rank <- function(x) {
   rank(x, ties.method = "average", na.last = "keep") / n * 100
 }
 
-compute_ratings <- function(df, leagues = NULL, gk_agg = NULL) {
+compute_ratings <- function(df, leagues = NULL, gk_agg = NULL, apply_minutes_floor = TRUE) {
   if (is.null(df)) {
     return(NULL)
   }
@@ -172,7 +222,7 @@ compute_ratings <- function(df, leagues = NULL, gk_agg = NULL) {
 
   if (is.na(pos_col) && !is.null(leagues)) {
     players <- tryCatch(
-      asa$get_players(leagues = as.list(leagues)),
+      cached$get_players(leagues = as.list(leagues)),
       error = function(e) NULL
     )
     if (!is.null(players) && nrow(players) > 0) {
@@ -209,12 +259,21 @@ compute_ratings <- function(df, leagues = NULL, gk_agg = NULL) {
 
   df <- df |>
     mutate(pos_group = unname(POSITION_MAP[.data[[pos_col]]])) |>
-    filter(!is.na(pos_group), !is.na(minutes_played), minutes_played > 0) |>
-    group_by(pos_group) |>
-    mutate(min_thresh = quantile(minutes_played, 0.25, na.rm = TRUE)) |>
-    filter(minutes_played > min_thresh) |>
-    select(-min_thresh) |>
-    ungroup()
+    filter(!is.na(pos_group), !is.na(minutes_played), minutes_played > 0)
+
+  # Small-sample players (a handful of good/bad touches in limited minutes)
+  # can produce wild per-96 rates and skew rankings, so by default each
+  # position group excludes anyone below its own 25th-percentile of minutes
+  # played. This is separate from — and stricter than — the sidebar's
+  # Minimum Minutes filter, and can be turned off via apply_minutes_floor.
+  if (apply_minutes_floor) {
+    df <- df |>
+      group_by(pos_group) |>
+      mutate(min_thresh = quantile(minutes_played, 0.25, na.rm = TRUE)) |>
+      filter(minutes_played > min_thresh) |>
+      select(-min_thresh) |>
+      ungroup()
+  }
 
   if (nrow(df) == 0) {
     return(NULL)
@@ -364,11 +423,11 @@ compute_ratings <- function(df, leagues = NULL, gk_agg = NULL) {
 #     player on the same six action types (goalkeepers get their own set)
 #   - goals_added, the sum of those components (matches the old behavior)
 #   - minutes_played
-fetch_ga_totals <- function(leagues, seasons, min_minutes, by_game = FALSE) {
+fetch_ga_totals <- function(leagues, seasons, by_game = FALSE) {
   args <- list(
     leagues = as.list(leagues),
     season_name = if (length(seasons) == 0) NULL else as.list(seasons),
-    minimum_minutes = as.integer(min_minutes),
+    minimum_minutes = 0L,
     split_by_seasons = TRUE,
     split_by_teams = TRUE,
     split_by_games = by_game
@@ -376,9 +435,9 @@ fetch_ga_totals <- function(leagues, seasons, min_minutes, by_game = FALSE) {
   tryCatch(
     {
       raw <- bind_rows(
-        unnest(do.call(asa$get_player_goals_added, args), data),
+        unnest(do.call(cached$get_player_goals_added, args), data),
         tryCatch(
-          unnest(do.call(asa$get_goalkeeper_goals_added, args), data),
+          unnest(do.call(cached$get_goalkeeper_goals_added, args), data),
           error = function(e) NULL
         )
       )
@@ -451,15 +510,15 @@ add_ga_columns <- function(df, ga) {
   .append_p96(df, final_names)
 }
 
-fetch_agg <- function(stat_type, leagues, seasons, min_minutes) {
-  args <- player_args(leagues, seasons, min_minutes)
+fetch_agg <- function(stat_type, leagues, seasons) {
+  args <- player_args(leagues, seasons)
   log_call(paste0("get_player_", stat_type), leagues, seasons)
 
   tryCatch(
     {
       df <- if (stat_type == "xgoals_xpass") {
-        xg <- do.call(asa$get_player_xgoals, args)
-        xp <- do.call(asa$get_player_xpass, args)
+        xg <- do.call(cached$get_player_xgoals, args)
+        xp <- do.call(cached$get_player_xpass, args)
         keys <- intersect(
           c("player_id", "team_id", "season_name"),
           intersect(names(xg), names(xp))
@@ -467,7 +526,7 @@ fetch_agg <- function(stat_type, leagues, seasons, min_minutes) {
         xp_keep <- c(keys, setdiff(names(xp), names(xg)))
         players <- left_join(xg, select(xp, all_of(xp_keep)), by = keys)
         gk <- tryCatch(
-          do.call(asa$get_goalkeeper_xgoals, args),
+          do.call(cached$get_goalkeeper_xgoals, args),
           error = function(e) NULL
         )
         combined <- if (!is.null(gk) && nrow(gk) > 0) {
@@ -480,20 +539,20 @@ fetch_agg <- function(stat_type, leagues, seasons, min_minutes) {
         } else {
           players
         }
-        ga <- fetch_ga_totals(leagues, seasons, min_minutes)
+        ga <- fetch_ga_totals(leagues, seasons)
         add_ga_columns(combined, ga)
       } else {
         switch(
           stat_type,
           goals_added = {
-            ga <- fetch_ga_totals(leagues, seasons, min_minutes)
+            ga <- fetch_ga_totals(leagues, seasons)
             if (is.null(ga)) {
               NULL
             } else {
               .append_p96(ga, setdiff(names(ga), c("player_id", "team_id", "season_name", "minutes_played")))
             }
           },
-          salaries = do.call(asa$get_player_salaries, args)
+          salaries = do.call(cached$get_player_salaries, args)
         )
       }
       attach_names(df, leagues)
@@ -509,19 +568,19 @@ fetch_agg <- function(stat_type, leagues, seasons, min_minutes) {
   )
 }
 
-fetch_games <- function(leagues, seasons, min_minutes) {
+fetch_games <- function(leagues, seasons) {
   args <- list(
     leagues = as.list(leagues),
     season_name = if (length(seasons) == 0) NULL else as.list(seasons),
-    minimum_minutes = as.integer(min_minutes),
+    minimum_minutes = 0L,
     split_by_games = TRUE,
     split_by_teams = FALSE
   )
   log_call("get_player_xgoals/xpass (split_by_games)", leagues, seasons)
   tryCatch(
     {
-      xg <- do.call(asa$get_player_xgoals, args)
-      xp <- do.call(asa$get_player_xpass, args)
+      xg <- do.call(cached$get_player_xgoals, args)
+      xp <- do.call(cached$get_player_xpass, args)
       keys <- intersect(
         c("player_id", "team_id", "season_name", "game_id", "date"),
         intersect(names(xg), names(xp))
@@ -529,7 +588,7 @@ fetch_games <- function(leagues, seasons, min_minutes) {
       xp_keep <- c(keys, setdiff(names(xp), names(xg)))
       players <- left_join(xg, select(xp, all_of(xp_keep)), by = keys)
       gk <- tryCatch(
-        do.call(asa$get_goalkeeper_xgoals, args),
+        do.call(cached$get_goalkeeper_xgoals, args),
         error = function(e) NULL
       )
       df <- if (!is.null(gk) && nrow(gk) > 0) {
@@ -542,7 +601,7 @@ fetch_games <- function(leagues, seasons, min_minutes) {
       } else {
         players
       }
-      ga <- fetch_ga_totals(leagues, seasons, min_minutes, by_game = TRUE)
+      ga <- fetch_ga_totals(leagues, seasons, by_game = TRUE)
       df <- add_ga_columns(df, ga)
       attach_names(df, leagues)
     },
@@ -787,6 +846,8 @@ ui <- page_sidebar(
 
     actionButton("fetch", "Fetch Stats", class = "btn-primary w-100"),
 
+    actionButton("force_refresh", "Force Refresh", class = "w-100 mt-2"),
+
     hr(),
 
     downloadButton("download_csv", "Download CSV", class = "w-100")
@@ -826,6 +887,30 @@ ui <- page_sidebar(
       "Player Cards",
       div(
         style = "height: calc(100vh - 150px); overflow-y: auto; padding: 1rem;",
+        div(
+          class = "d-flex justify-content-end align-items-center text-muted small mb-1",
+          style = "gap: 0.35rem;",
+          tags$span(
+            "Hide low-minute outliers",
+            tags$abbr(
+              title = paste(
+                "Each position group normally excludes players below its",
+                "own 25th-percentile of minutes played, so a handful of",
+                "touches in limited minutes can't produce a wild per-96",
+                "rate and distort the rankings. This is separate from —",
+                "and stricter than — the sidebar's Minimum Minutes filter.",
+                "Uncheck to include everyone who otherwise met Minimum",
+                "Minutes."
+              ),
+              style = "cursor: help; text-decoration: none;",
+              " (?)"
+            )
+          ),
+          div(
+            style = "transform: scale(0.85); margin-bottom: -0.5rem;",
+            checkboxInput("pc_minutes_floor", label = NULL, value = TRUE)
+          )
+        ),
         uiOutput("player_cards")
       )
     )
@@ -835,21 +920,25 @@ ui <- page_sidebar(
 # --- server -------------------------------------------------------------------
 
 server <- function(input, output, session) {
-  agg_data <- reactiveVal(NULL)
-  game_data <- reactiveVal(NULL)
+  agg_data_raw <- reactiveVal(NULL)
+  game_data_raw <- reactiveVal(NULL)
+
+  # Full (minimum_minutes = 0) rosters, cached at the ASA-endpoint level.
+  # The Minimum Minutes filter is applied locally below so moving the
+  # slider never triggers a re-fetch.
+  agg_data <- reactive(apply_min_minutes(agg_data_raw(), input$min_minutes))
+  game_data <- reactive(apply_min_minutes(game_data_raw(), input$min_minutes))
 
   do_fetch <- function() {
     req(input$leagues)
-    agg_data(fetch_agg(
+    agg_data_raw(fetch_agg(
       stat_type = input$agg_stat_type,
       leagues = input$leagues,
-      seasons = input$seasons,
-      min_minutes = input$min_minutes
+      seasons = input$seasons
     ))
-    game_data(fetch_games(
+    game_data_raw(fetch_games(
       leagues = input$leagues,
-      seasons = input$seasons,
-      min_minutes = input$min_minutes
+      seasons = input$seasons
     ))
   }
 
@@ -878,11 +967,10 @@ server <- function(input, output, session) {
     input$agg_stat_type,
     {
       req(input$leagues)
-      agg_data(fetch_agg(
+      agg_data_raw(fetch_agg(
         stat_type = input$agg_stat_type,
         leagues = input$leagues,
-        seasons = input$seasons,
-        min_minutes = input$min_minutes
+        seasons = input$seasons
       ))
     },
     ignoreInit = TRUE
@@ -890,6 +978,15 @@ server <- function(input, output, session) {
 
   observeEvent(input$fetch, {
     withProgress(message = "Fetching data from ASA…", value = 0, {
+      setProgress(0.2)
+      do_fetch()
+      setProgress(1)
+    })
+  })
+
+  observeEvent(input$force_refresh, {
+    invisible(lapply(cached, memoise::forget))
+    withProgress(message = "Refreshing from ASA…", value = 0, {
       setProgress(0.2)
       do_fetch()
       setProgress(1)
@@ -946,7 +1043,12 @@ server <- function(input, output, session) {
       }
     })
 
-    ratings <- compute_ratings(df, input$leagues, gk_agg)
+    ratings <- compute_ratings(
+      df,
+      input$leagues,
+      gk_agg,
+      apply_minutes_floor = isTRUE(input$pc_minutes_floor)
+    )
     if (is.null(ratings) || nrow(ratings) == 0) {
       return(p(
         class = "text-muted p-3",

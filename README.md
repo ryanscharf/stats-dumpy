@@ -2,12 +2,13 @@
 
 A single-file R Shiny app for browsing [American Soccer Analysis](https://www.americansocceranalysis.com/) (ASA) player data — xG, xPass, Goals Added (g+), and salaries — across MLS, NWSL, MLS Next Pro, USL Super League, USL Championship, USL League One, and NASL.
 
-Data comes live from ASA via the [`itscalledsoccer`](https://github.com/American-Soccer-Analysis/itscalledsoccer) R client; nothing is cached or checked into this repo.
+Data comes live from ASA via the [`itscalledsoccer`](https://github.com/American-Soccer-Analysis/itscalledsoccer) R client, with an in-memory cache in front of it (see "Caching" below) — nothing is persisted to disk or checked into this repo.
 
 ## Running it
 
 ```r
-install.packages(c("shiny", "bslib", "bsicons", "itscalledsoccer", "dplyr", "tidyr", "DT"))
+# install.packages("pak")  # if you don't have pak yet
+pak::pak(c("shiny", "bslib", "bsicons", "itscalledsoccer", "dplyr", "tidyr", "DT", "memoise", "cachem"))
 shiny::runApp("app.R")
 ```
 
@@ -17,9 +18,10 @@ The sidebar controls what gets fetched:
 
 - **Leagues** — one or more leagues to pull (default: USL Super League)
 - **Seasons** — blank means all seasons available for the selected league(s); options repopulate when you change leagues
-- **Minimum Minutes** — filter out small-sample players before fetching
-- **Fetch Stats** — pulls fresh data from ASA for the current filters
-- **Download CSV** — exports whichever table (Aggregate or Game Stats) is currently active
+- **Minimum Minutes** — filters small-sample players out of the currently loaded data instantly, with no re-fetch (see "Caching" below)
+- **Fetch Stats** — pulls the full league/season roster from ASA (or from cache, if already fetched recently)
+- **Force Refresh** — bypasses the cache and re-fetches from ASA immediately, for when you know something changed (e.g. right after a match)
+- **Download CSV** — exports whichever table (Aggregate or Game Stats) is currently active, filtered by Minimum Minutes
 
 Three tabs consume that data:
 
@@ -39,7 +41,7 @@ The same xG/xPass/g+ shape as Aggregate Stats, but split out per player-per-game
 
 A rated, position-grouped card view built on top of the Aggregate Stats ("xGoals + xPass") data. For each position group, players are:
 
-1. Filtered to those above the 25th-percentile of minutes played *within that position group* (so bit-part players don't clutter the rankings)
+1. Filtered to those above the 25th-percentile of minutes played *within that position group* (so bit-part players don't clutter the rankings). This is a separate, stricter filter than the sidebar's Minimum Minutes — it's computed dynamically per position group, so a player can pass Minimum Minutes and still be excluded from cards. A "Hide low-minute outliers" checkbox above the cards (on by default) lets you turn this off to see everyone who otherwise met Minimum Minutes, including small-sample players whose per-96 rates are noisy.
 2. Scored on a 0–100 **composite** rating, computed from a different weighted blend of percentile ranks per position (see `compute_ratings()` in `app.R`):
    - **FW**: xG/96, g+/96, shot-on-target %, xPass%
    - **MF**: g+/96, xPass%, xG/96, passes/96
@@ -55,6 +57,14 @@ The displayed tiles aren't always identical to the composite inputs above — FB
 ASA's Goals Added (g+) model scores every outfield player on the same set of on-ball action types (dribbling, fouling, interrupting, passing, receiving, shooting) — it's a positionless "common currency" of value, not a position-specific stat. Goalkeepers run through a separate model with their own action types. This app fetches that per-action breakdown (`fetch_ga_totals()`) and pivots it into wide columns (`ga_<action_type>`) rather than only exposing the summed total, so you can see e.g. how much of a center back's value comes from `ga_interrupting` vs. `ga_passing`.
 
 Every component also gets a `_p96` (per-96-minutes) counterpart — the same normalization convention used throughout the app for `xgoals_p96`, `passes_p96`, etc. — since raw totals aren't comparable across players with different playing time.
+
+## Caching
+
+Fetching a full league/season roster from ASA is the slow part, so every ASA endpoint call is wrapped with [`memoise`](https://memoise.r-lib.org/) backed by an in-memory [`cachem::cache_mem()`](https://cachem.r-lib.org/) with a 6-hour TTL (`.memoize_asa()` in `app.R`). Memoization happens at the individual endpoint level (`get_player_xgoals`, `get_player_goals_added`, `get_players`, etc. — see the `cached` list near the top of `app.R`), not around the higher-level `fetch_agg()`/`fetch_games()` functions, so the cache is shared across tabs and stat types that hit the same underlying endpoint. Each endpoint gets its own dedicated cache instance rather than sharing one — memoise's cache-key hashing can't reliably distinguish between different endpoints' identically-shaped wrapper closures when they're called with the same arguments, so sharing a single cache risked one endpoint's result being served for another's request.
+
+The **Minimum Minutes** filter is intentionally *not* part of the cached request: every fetch always pulls the full roster (`minimum_minutes = 0`), and the threshold is applied afterward as a local `dplyr::filter()` (`apply_min_minutes()`). That decoupling is what makes the slider instant — it never re-hits the API or even the cache, it just re-filters data already in memory — and it also means every distinct Minimum Minutes value doesn't fragment the cache into separate entries.
+
+The cache is in-memory and process-scoped: it's shared across concurrent users of the same running app instance, and clears on cold start/redeploy. That's a deliberate tradeoff for a hosted app where a persistent on-disk cache isn't guaranteed to survive container restarts. The 6-hour TTL and the **Force Refresh** button (which calls `memoise::forget()` on every cached endpoint before re-fetching) cover the case where ASA's data updates mid-window.
 
 ## Known gaps
 
