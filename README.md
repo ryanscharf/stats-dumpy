@@ -17,7 +17,7 @@ shiny::runApp("app.R")
 The sidebar controls what gets fetched:
 
 - **Leagues** — one or more leagues to pull (default: USL Super League)
-- **Seasons** — blank means all seasons available for the selected league(s); options repopulate when you change leagues
+- **Seasons** — blank means all seasons available for the selected league(s); options repopulate when you change leagues. Multi-year leagues (USL Championship, USL League One, USL Super League) are labeled `YYYY-yy` (e.g. `2025-26`) — except USL Super League from the 2026 season onward, which ASA labels as a plain `YYYY` year (`2026`, not `2026-27`), a break from its own prior convention. `SINGLE_YEAR_SEASON_FROM` in `app.R` controls the cutoff per league if this happens elsewhere too.
 - **Minimum Minutes** — filters small-sample players out of the currently loaded data instantly, with no re-fetch (see "Caching" below)
 - **Fetch Stats** — pulls the full league/season roster from ASA (or from cache, if already fetched recently)
 - **Force Refresh** — bypasses the cache and re-fetches from ASA immediately, for when you know something changed (e.g. right after a match)

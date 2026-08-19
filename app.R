@@ -38,7 +38,10 @@ asa <- AmericanSoccerAnalysis$new()
 .memoize_asa <- function(fn) {
   memoise::memoise(
     function(...) fn(...),
-    cache = cachem::cache_mem(max_age = CACHE_TTL_SECONDS, max_size = 500 * 1024^2)
+    cache = cachem::cache_mem(
+      max_age = CACHE_TTL_SECONDS,
+      max_size = 500 * 1024^2
+    )
   )
 }
 
@@ -70,6 +73,13 @@ AGG_STAT_TYPES <- c(
 )
 
 MULTISEASON_LEAGUES <- c("uslc", "usl1", "usls")
+
+# USL Super League broke from the "YYYY-yy" split-year naming it used for
+# 2024-25/2025-26 starting with the 2026 season, which ASA labels as the
+# plain year "2026" (no dash) — apparently a move to calendar-year seasons.
+# Maps league -> first year that uses plain-year naming instead of dash
+# naming, for leagues in MULTISEASON_LEAGUES.
+SINGLE_YEAR_SEASON_FROM <- list(usls = 2026L)
 
 POSITION_MAP <- c(
   "GK" = "GK",
@@ -105,9 +115,9 @@ LEAGUE_YEARS <- list(
   mls = c(2013L, 2026L),
   nwsl = c(2016L, 2026L),
   mlsnp = c(2022L, 2026L),
-  usls = c(2024L, 2025L),
-  uslc = c(2011L, 2025L),
-  usl1 = c(2019L, 2025L),
+  usls = c(2024L, 2026L),
+  uslc = c(2011L, 2026L),
+  usl1 = c(2019L, 2026L),
   nasl = c(2013L, 2017L)
 )
 
@@ -119,11 +129,16 @@ valid_seasons_for <- function(leagues) {
       next
     }
     yrs <- span[1]:span[2]
-    formatted <- if (lg %in% MULTISEASON_LEAGUES) {
-      paste0(yrs, "-", substr(yrs + 1L, 3, 4))
-    } else {
-      as.character(yrs)
+    is_dash <- rep(lg %in% MULTISEASON_LEAGUES, length(yrs))
+    single_year_from <- SINGLE_YEAR_SEASON_FROM[[lg]]
+    if (!is.null(single_year_from)) {
+      is_dash <- is_dash & (yrs < single_year_from)
     }
+    formatted <- ifelse(
+      is_dash,
+      paste0(yrs, "-", substr(yrs + 1L, 3, 4)),
+      as.character(yrs)
+    )
     seasons <- union(seasons, formatted)
   }
   seasons[order(substr(seasons, 1, 4), decreasing = TRUE)]
@@ -210,7 +225,12 @@ pct_rank <- function(x) {
   rank(x, ties.method = "average", na.last = "keep") / n * 100
 }
 
-compute_ratings <- function(df, leagues = NULL, gk_agg = NULL, apply_minutes_floor = TRUE) {
+compute_ratings <- function(
+  df,
+  leagues = NULL,
+  gk_agg = NULL,
+  apply_minutes_floor = TRUE
+) {
   if (is.null(df)) {
     return(NULL)
   }
@@ -469,14 +489,23 @@ fetch_ga_totals <- function(leagues, seasons, by_game = FALSE) {
       components <- raw |>
         mutate(ga_col = paste0("ga_", .slugify(action_type))) |>
         group_by(across(all_of(keys)), ga_col) |>
-        summarise(value = sum(goals_added_above_avg, na.rm = TRUE), .groups = "drop") |>
-        pivot_wider(names_from = ga_col, values_from = value, values_fill = NA_real_)
+        summarise(
+          value = sum(goals_added_above_avg, na.rm = TRUE),
+          .groups = "drop"
+        ) |>
+        pivot_wider(
+          names_from = ga_col,
+          values_from = value,
+          values_fill = NA_real_
+        )
 
       component_cols <- setdiff(names(components), keys)
 
       components |>
         left_join(minutes, by = keys) |>
-        mutate(goals_added = rowSums(across(all_of(component_cols)), na.rm = TRUE))
+        mutate(
+          goals_added = rowSums(across(all_of(component_cols)), na.rm = TRUE)
+        )
     },
     error = function(e) {
       showNotification(
@@ -555,7 +584,13 @@ fetch_agg <- function(stat_type, leagues, seasons) {
             if (is.null(ga)) {
               NULL
             } else {
-              .append_p96(ga, setdiff(names(ga), c("player_id", "team_id", "season_name", "minutes_played")))
+              .append_p96(
+                ga,
+                setdiff(
+                  names(ga),
+                  c("player_id", "team_id", "season_name", "minutes_played")
+                )
+              )
             }
           },
           salaries = do.call(cached$get_player_salaries, args)
@@ -835,7 +870,7 @@ ui <- page_sidebar(
       "seasons",
       "Seasons (blank = all)",
       choices = valid_seasons_for("usls"),
-      selected = "2025-26",
+      selected = "2026",
       multiple = TRUE,
       options = list(placeholder = "All seasons")
     ),
