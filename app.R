@@ -231,8 +231,12 @@ player_args <- function(leagues, seasons, aggregate_seasons = FALSE) {
     leagues = as.list(leagues),
     season_name = if (length(seasons) == 0) NULL else as.list(seasons),
     minimum_minutes = 0L,
+    # Aggregating also combines multi-team stints into one row — a player
+    # who changed teams across the aggregated seasons would otherwise still
+    # show up as one card per team, which reads as a duplicate/aggregation
+    # failure rather than what it actually is (a legitimate team split).
     split_by_seasons = !aggregate_seasons,
-    split_by_teams = TRUE
+    split_by_teams = !aggregate_seasons
   )
 }
 
@@ -527,11 +531,11 @@ fetch_ga_totals <- function(
     leagues = as.list(leagues),
     season_name = if (length(seasons) == 0) NULL else as.list(seasons),
     minimum_minutes = 0L,
-    # A single game already belongs to exactly one season, so the
-    # aggregate/split-by-season toggle only makes sense for the season-level
-    # (by_game = FALSE) fetch.
+    # A single game already belongs to exactly one season/team, so the
+    # aggregate toggle only makes sense for the season-level (by_game =
+    # FALSE) fetch.
     split_by_seasons = if (by_game) TRUE else !aggregate_seasons,
-    split_by_teams = TRUE,
+    split_by_teams = if (by_game) TRUE else !aggregate_seasons,
     split_by_games = by_game
   )
   tryCatch(
@@ -854,7 +858,14 @@ make_player_card <- function(row) {
   )
 
   player_name <- if (is.na(row$player_name)) "Unknown" else row$player_name
-  team_abbr <- if (is.na(row$team_abbreviation)) "" else row$team_abbreviation
+  # team_abbreviation doesn't exist at all (not just NA) when teams are
+  # combined via aggregation — is.null() first, or is.na(NULL) throws
+  # "argument is of length zero" and the card fails to render entirely.
+  team_abbr <- if (is.null(row$team_abbreviation) || is.na(row$team_abbreviation)) {
+    ""
+  } else {
+    row$team_abbreviation
+  }
   age_str <- if (!is.null(row$age) && !is.na(row$age)) {
     paste0("Age ", row$age)
   } else {
@@ -1223,17 +1234,19 @@ server <- function(input, output, session) {
       gd <- game_data()
       if (!is.null(gd) && "goals_minus_xgoals_gk" %in% names(gd)) {
         keys <- intersect(c("player_id", "team_id", "season_name"), names(gd))
-        # game_data() is always per-game (never season-aggregated), so it
-        # always has season_name. But if seasons are being aggregated
-        # together for the ratings df, that key must be dropped here too —
-        # otherwise this table keeps one row per season while df has one
-        # row per player, and the join below fans each ratings row out into
-        # one copy per season. Keyed on the toggle itself, not on whether
-        # df has a season_name column — df always has one now (a real value
-        # when split, a concatenated label when aggregated), so column
-        # presence alone can't distinguish the two anymore.
+        # game_data() is always per-game/per-team (never aggregated), so it
+        # always has season_name and team_id. But aggregating drops BOTH
+        # from the ratings df (one combined row per player, teams and
+        # seasons included), so both keys must be dropped here too —
+        # otherwise this table keeps multiple rows per player while df has
+        # one, and the join below fans that one row out into a copy per
+        # season/team. Keyed on the toggle itself, not on column presence —
+        # df always has a season_name (a real value when split, a
+        # concatenated label when aggregated), so presence alone can't
+        # distinguish the two anymore, and team_id is simply absent from
+        # gk_agg's join partner (names(df)) either way once dropped.
         if (isTRUE(input$aggregate_seasons)) {
-          keys <- setdiff(keys, "season_name")
+          keys <- setdiff(keys, c("season_name", "team_id"))
         }
         gd |>
           group_by(across(all_of(keys))) |>
