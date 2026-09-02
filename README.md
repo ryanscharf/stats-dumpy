@@ -42,7 +42,7 @@ The same xG/xPass/g+ shape as Aggregate Stats, but split out per player-per-game
 
 ### Player Cards
 
-A rated, position-grouped card view built on top of the Aggregate Stats ("xGoals + xPass") data — including the Aggregate across seasons toggle, so a multi-season composite rating is one checkbox away from a year-by-year one. For each position group, players are:
+A rated, position-grouped card view built on top of the Aggregate Stats ("xGoals + xPass") data — including the Aggregate across seasons toggle, so a multi-season composite rating is one checkbox away from a year-by-year one. Each card's subtitle shows the season(s) it covers (e.g. `2025-26` when split, `2025-26, 2024-25` when aggregated) — otherwise there'd be no visible sign the toggle did anything, since the same player can show up as more than one card (one per season) when seasons are split. For each position group, players are:
 
 1. Filtered to those above the 25th-percentile of minutes played *within that position group* (so bit-part players don't clutter the rankings). This is a separate, stricter filter than the sidebar's Minimum Minutes — it's computed dynamically per position group, so a player can pass Minimum Minutes and still be excluded from cards. A "Hide low-minute outliers" checkbox above the cards (on by default) lets you turn this off to see everyone who otherwise met Minimum Minutes, including small-sample players whose per-96 rates are noisy.
 2. Scored on a 0–100 **composite** rating, computed from a different weighted blend of percentile ranks per position (see `compute_ratings()` in `app.R`):

@@ -865,6 +865,14 @@ make_player_card <- function(row) {
   } else {
     NULL
   }
+  # Cards otherwise give no visual indication of which season(s) they cover,
+  # which makes the "Aggregate across seasons" toggle look like a no-op even
+  # though the underlying numbers did change — show it explicitly.
+  season_str <- if (!is.null(row$season_name) && !is.na(row$season_name)) {
+    row$season_name
+  } else {
+    NULL
+  }
 
   card(
     class = "h-100",
@@ -885,7 +893,8 @@ make_player_card <- function(row) {
             Negate(is.null),
             list(
               paste0(round(row$minutes_played), " min"),
-              age_str
+              age_str,
+              season_str
             )
           ),
           collapse = " · "
