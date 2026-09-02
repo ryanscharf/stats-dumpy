@@ -30,9 +30,11 @@ Three tabs consume that data:
 
 Season-level totals, one row per player-team-season. A dropdown switches between three stat families:
 
-- **xGoals + xPass** — shooting (`xgoals`, `shots`, etc.), passing (`xpass_completion_percentage`, `attempted_passes`), goalkeeper shot-stopping columns when available, and the full Goals Added breakdown joined in (see below). This is also the dataset the Player Cards tab depends on.
+- **xGoals + xPass** — shooting (`xgoals`, `shots`, etc.), passing (`xpass_completion_percentage`, `attempted_passes`), goalkeeper shot-stopping columns when available (see "Goalkeeper save %" below), and the full Goals Added breakdown joined in (see below). This is also the dataset the Player Cards tab depends on.
 - **Goals Added** — ASA's g+ model, pivoted so each row is one player with a column per action component (`ga_passing`, `ga_receiving`, `ga_dribbling`, `ga_shooting`, `ga_interrupting`, `ga_fouling` for outfield players; goalkeepers get their own component set), plus a `goals_added` total. See "Goals Added components" below.
 - **Salaries** — raw salary data from ASA, where available.
+
+Columns are ordered by `COLUMN_ORDER` in `app.R` (identity/meta → playing time → attacking → passing → goalkeeping → Goals Added components) rather than however ASA happens to return them across its several endpoints, and this ordering is shared by the CSV download. Any column not in that list (e.g. salary-specific fields) just falls through to the end via `everything()`.
 
 ### Game Stats
 
@@ -60,6 +62,16 @@ ASA's Goals Added (g+) model scores every outfield player on the same set of on-
 Every component also gets a `_p96` (per-96-minutes) counterpart — the same normalization convention used throughout the app for `xgoals_p96`, `passes_p96`, etc. — since raw totals aren't comparable across players with different playing time.
 
 A component column is `NA`, not `0`, for any player whose role doesn't include that action type at all — e.g. `ga_sweeping` is blank for outfield players and `ga_dribbling` is blank for goalkeepers, since they're never evaluated on it in the first place. This mirrors how other position-specific stats (like `save_pct` for non-goalkeepers) already show blank rather than a misleading zero.
+
+## Goalkeeper save %
+
+ASA's raw goalkeeper data (`shots_faced`, `saves`, `xgoals_gk_faced`) doesn't include a save-percentage stat directly, so `add_gk_save_pct()` derives three (`NA` for non-goalkeepers, same as the g+ components above):
+
+- **`sv_pct`** — actual saves as a % of shots faced
+- **`xsv_pct`** — the save % an average keeper would be expected to post, given the quality of shots faced (from `xgoals_gk_faced`)
+- **`sv_pct_plus_minus`** — `sv_pct` minus `xsv_pct`: shot-stopping performance above/below expectation, in percentage points. Positive means outperforming the shots they faced; negative means underperforming them.
+
+These are separate from — and on a 0–100 scale, unlike — the `save_pct` computed internally for Player Cards (a 0–1 fraction, private to `compute_ratings()`, never exposed in the Aggregate/Game Stats tables).
 
 ## Caching
 

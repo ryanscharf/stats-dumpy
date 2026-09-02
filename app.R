@@ -72,6 +72,88 @@ AGG_STAT_TYPES <- c(
   "Salaries" = "salaries"
 )
 
+# Canonical column order for the Aggregate/Game Stats tables and CSV
+# download, applied by attach_names() via intersect() + everything() — so
+# it degrades gracefully (unlisted columns just fall through to the end)
+# regardless of which stat_type produced the data.
+COLUMN_ORDER <- c(
+  # identity / meta
+  "player_id",
+  "player_name",
+  "team_abbreviation",
+  "team_id",
+  "general_position",
+  "primary_broad_position",
+  "birth_date",
+  "season_name",
+  "competition",
+  "game_id",
+  "date",
+  # playing time
+  "minutes_played",
+  "count_games",
+  # attacking output
+  "shots",
+  "shots_on_target",
+  "goals",
+  "xgoals",
+  "xplace",
+  "goals_minus_xgoals",
+  "key_passes",
+  "primary_assists",
+  "xassists",
+  "primary_assists_minus_xassists",
+  "goals_plus_primary_assists",
+  "xgoals_plus_xassists",
+  "points_added",
+  "xpoints_added",
+  # passing
+  "attempted_passes",
+  "pass_completion_percentage",
+  "xpass_completion_percentage",
+  "passes_completed_over_expected",
+  "passes_completed_over_expected_p100",
+  "avg_distance_yds",
+  "avg_vertical_distance_yds",
+  "share_team_touches",
+  # goalkeeping
+  "shots_faced",
+  "goals_conceded",
+  "saves",
+  "sv_pct",
+  "xsv_pct",
+  "sv_pct_plus_minus",
+  "share_headed_shots",
+  "xgoals_gk_faced",
+  "goals_minus_xgoals_gk",
+  "goals_divided_by_xgoals_gk",
+  # goals added — raw components, then total, then their p96 counterparts
+  "ga_dribbling",
+  "ga_fouling",
+  "ga_interrupting",
+  "ga_passing",
+  "ga_receiving",
+  "ga_shooting",
+  "ga_claiming",
+  "ga_fielding",
+  "ga_handling",
+  "ga_shotstopping",
+  "ga_sweeping",
+  "goals_added",
+  "ga_dribbling_p96",
+  "ga_fouling_p96",
+  "ga_interrupting_p96",
+  "ga_passing_p96",
+  "ga_receiving_p96",
+  "ga_shooting_p96",
+  "ga_claiming_p96",
+  "ga_fielding_p96",
+  "ga_handling_p96",
+  "ga_shotstopping_p96",
+  "ga_sweeping_p96",
+  "goals_added_p96"
+)
+
 MULTISEASON_LEAGUES <- c("uslc", "usl1", "usls")
 
 # USL Super League broke from the "YYYY-yy" split-year naming it used for
@@ -196,15 +278,7 @@ attach_names <- function(df, leagues) {
     }
   }
 
-  front <- intersect(
-    c(
-      "player_id",
-      "player_name",
-      "team_abbreviation",
-      "primary_broad_position"
-    ),
-    names(df)
-  )
+  front <- intersect(COLUMN_ORDER, names(df))
   select(df, all_of(front), everything())
 }
 
@@ -526,6 +600,27 @@ fetch_ga_totals <- function(
   )
 }
 
+# Adds three save-percentage stats for goalkeepers (NA for everyone else,
+# since the underlying shots_faced/saves/xgoals_gk_faced columns are only
+# populated for GK rows):
+#   - sv_pct: actual saves as a % of shots faced
+#   - xsv_pct: the save % an average keeper would be expected to post,
+#     given the quality of shots faced (from xgoals_gk_faced)
+#   - sv_pct_plus_minus: sv_pct minus xsv_pct — shot-stopping performance
+#     above/below expectation, in percentage points
+add_gk_save_pct <- function(df) {
+  needed <- c("shots_faced", "saves", "xgoals_gk_faced")
+  if (!all(needed %in% names(df))) {
+    return(df)
+  }
+  df |>
+    mutate(
+      sv_pct = saves / pmax(shots_faced, 1) * 100,
+      xsv_pct = (shots_faced - xgoals_gk_faced) / pmax(shots_faced, 1) * 100,
+      sv_pct_plus_minus = sv_pct - xsv_pct
+    )
+}
+
 add_ga_columns <- function(df, ga) {
   if (is.null(ga) || nrow(ga) == 0) {
     return(df)
@@ -582,6 +677,7 @@ fetch_agg <- function(stat_type, leagues, seasons, aggregate_seasons = FALSE) {
         } else {
           players
         }
+        combined <- add_gk_save_pct(combined)
         ga <- fetch_ga_totals(leagues, seasons, aggregate_seasons = aggregate_seasons)
         add_ga_columns(combined, ga)
       } else {
@@ -661,6 +757,7 @@ fetch_games <- function(leagues, seasons) {
       } else {
         players
       }
+      df <- add_gk_save_pct(df)
       ga <- fetch_ga_totals(leagues, seasons, by_game = TRUE)
       df <- add_ga_columns(df, ga)
       attach_names(df, leagues)
