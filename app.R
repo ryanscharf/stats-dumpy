@@ -118,6 +118,7 @@ COLUMN_ORDER <- c(
   "share_team_touches",
   # goalkeeping
   "shots_faced",
+  "shots_on_target_faced",
   "goals_conceded",
   "saves",
   "sv_pct",
@@ -379,10 +380,6 @@ compute_ratings <- function(
   }
 
   # GK-specific column detection
-  gk_shots_col <- intersect(
-    c("shots_on_target_faced", "shots_faced"),
-    names(df)
-  )[1]
   gk_gc_col <- intersect(c("goals_conceded", "goals_against"), names(df))[1]
   gk_xg_col <- intersect(
     c("xgoals_gk", "xgoals_against", "xgoals_faced"),
@@ -393,13 +390,20 @@ compute_ratings <- function(
     if (!col %in% names(df)) df[[col]] <- NA_real_
   }
 
-  if (!is.na(gk_shots_col) && !is.na(gk_gc_col)) {
+  # save_pct is saves / (saves + goals conceded) — not saves / shots_faced.
+  # shots_faced can include attempts that were neither saved nor scored
+  # (e.g. blocked or off-target shots ASA still logs as "faced"), so it
+  # isn't the right save-percentage denominator; saves + goals_conceded is
+  # exactly the shots that had to be one or the other. See add_gk_save_pct().
+  if ("saves" %in% names(df) && !is.na(gk_gc_col)) {
     df <- df |>
-      mutate(
-        save_pct = (.data[[gk_shots_col]] - .data[[gk_gc_col]]) /
-          pmax(.data[[gk_shots_col]], 1),
-        shots_faced_p96 = .data[[gk_shots_col]] / pmax(minutes_played, 1) * 96
-      )
+      mutate(save_pct = saves / pmax(saves + .data[[gk_gc_col]], 1))
+  }
+  # shots_faced_p96 stays a raw workload/exposure stat (total shot volume
+  # faced per 96), independent of the save-percentage denominator above.
+  if ("shots_faced" %in% names(df)) {
+    df <- df |>
+      mutate(shots_faced_p96 = shots_faced / pmax(minutes_played, 1) * 96)
   }
 
   if (!is.null(gk_agg) && "goals_minus_xgoals_gk" %in% names(gk_agg)) {
@@ -607,22 +611,34 @@ fetch_ga_totals <- function(
 }
 
 # Adds three save-percentage stats for goalkeepers (NA for everyone else,
-# since the underlying shots_faced/saves/xgoals_gk_faced columns are only
-# populated for GK rows):
-#   - sv_pct: actual saves as a % of shots faced
+# since the underlying saves/goals_conceded/xgoals_gk_faced columns are
+# only populated for GK rows):
+#   - sv_pct: actual saves as a % of shots on target faced
 #   - xsv_pct: the save % an average keeper would be expected to post,
 #     given the quality of shots faced (from xgoals_gk_faced)
 #   - sv_pct_plus_minus: sv_pct minus xsv_pct — shot-stopping performance
 #     above/below expectation, in percentage points
+#
+# Deliberately denominated on `saves + goals_conceded`, not ASA's raw
+# `shots_faced` — the two aren't the same thing. shots_faced can include
+# shot attempts that were neither saved nor scored (e.g. blocked or off
+# target but still logged as "faced" for shot-quality purposes), so
+# saves/shots_faced understates true save rate, diluted by shots that
+# never actually needed stopping. saves + goals_conceded is exactly the
+# shots that had to be one or the other, which is the standard save-
+# percentage denominator used industry-wide.
 add_gk_save_pct <- function(df) {
-  needed <- c("shots_faced", "saves", "xgoals_gk_faced")
+  needed <- c("saves", "goals_conceded", "xgoals_gk_faced")
   if (!all(needed %in% names(df))) {
     return(df)
   }
   df |>
     mutate(
-      sv_pct = saves / pmax(shots_faced, 1) * 100,
-      xsv_pct = (shots_faced - xgoals_gk_faced) / pmax(shots_faced, 1) * 100,
+      shots_on_target_faced = saves + goals_conceded,
+      sv_pct = saves / pmax(shots_on_target_faced, 1) * 100,
+      xsv_pct = (shots_on_target_faced - xgoals_gk_faced) /
+        pmax(shots_on_target_faced, 1) *
+        100,
       sv_pct_plus_minus = sv_pct - xsv_pct
     )
 }

@@ -66,13 +66,14 @@ A component column is `NA`, not `0`, for any player whose role doesn't include t
 
 ## Goalkeeper save %
 
-ASA's raw goalkeeper data (`shots_faced`, `saves`, `xgoals_gk_faced`) doesn't include a save-percentage stat directly, so `add_gk_save_pct()` derives three (`NA` for non-goalkeepers, same as the g+ components above):
+ASA's raw goalkeeper data (`shots_faced`, `saves`, `goals_conceded`, `xgoals_gk_faced`) doesn't include a save-percentage stat directly, so `add_gk_save_pct()` derives three (`NA` for non-goalkeepers, same as the g+ components above):
 
-- **`sv_pct`** — actual saves as a % of shots faced
-- **`xsv_pct`** — the save % an average keeper would be expected to post, given the quality of shots faced (from `xgoals_gk_faced`)
+- **`shots_on_target_faced`** — `saves + goals_conceded`, i.e. shots that had to be either stopped or conceded. This is *not* the same as ASA's raw `shots_faced`, which can include attempts that were neither saved nor scored (blocked, off target, but still logged as "faced" for shot-quality purposes) — using `shots_faced` as the save-percentage denominator would understate a keeper's true save rate, diluted by shots that never actually needed stopping.
+- **`sv_pct`** — actual saves as a % of `shots_on_target_faced`
+- **`xsv_pct`** — the save % an average keeper would be expected to post, given the quality of shots faced (from `xgoals_gk_faced`), over the same `shots_on_target_faced` denominator
 - **`sv_pct_plus_minus`** — `sv_pct` minus `xsv_pct`: shot-stopping performance above/below expectation, in percentage points. Positive means outperforming the shots they faced; negative means underperforming them.
 
-These are separate from — and on a 0–100 scale, unlike — the `save_pct` computed internally for Player Cards (a 0–1 fraction, private to `compute_ratings()`, never exposed in the Aggregate/Game Stats tables).
+Player Cards use this exact same formula internally (`compute_ratings()`'s `save_pct`, as a 0–1 fraction rather than 0–100) rather than a separate calculation — they used to disagree with the table's `sv_pct` for any goalkeeper whose `shots_faced` didn't equal `saves + goals_conceded`, since the card's old formula implicitly assumed it always did.
 
 ## Caching
 
