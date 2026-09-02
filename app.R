@@ -226,17 +226,18 @@ valid_seasons_for <- function(leagues) {
   seasons[order(substr(seasons, 1, 4), decreasing = TRUE)]
 }
 
-player_args <- function(leagues, seasons, aggregate_seasons = FALSE) {
+player_args <- function(
+  leagues,
+  seasons,
+  aggregate_seasons = FALSE,
+  aggregate_teams = FALSE
+) {
   list(
     leagues = as.list(leagues),
     season_name = if (length(seasons) == 0) NULL else as.list(seasons),
     minimum_minutes = 0L,
-    # Aggregating also combines multi-team stints into one row — a player
-    # who changed teams across the aggregated seasons would otherwise still
-    # show up as one card per team, which reads as a duplicate/aggregation
-    # failure rather than what it actually is (a legitimate team split).
     split_by_seasons = !aggregate_seasons,
-    split_by_teams = !aggregate_seasons
+    split_by_teams = !aggregate_teams
   )
 }
 
@@ -525,17 +526,18 @@ fetch_ga_totals <- function(
   leagues,
   seasons,
   by_game = FALSE,
-  aggregate_seasons = FALSE
+  aggregate_seasons = FALSE,
+  aggregate_teams = FALSE
 ) {
   args <- list(
     leagues = as.list(leagues),
     season_name = if (length(seasons) == 0) NULL else as.list(seasons),
     minimum_minutes = 0L,
     # A single game already belongs to exactly one season/team, so the
-    # aggregate toggle only makes sense for the season-level (by_game =
+    # aggregate toggles only make sense for the season-level (by_game =
     # FALSE) fetch.
     split_by_seasons = if (by_game) TRUE else !aggregate_seasons,
-    split_by_teams = if (by_game) TRUE else !aggregate_seasons,
+    split_by_teams = if (by_game) TRUE else !aggregate_teams,
     split_by_games = by_game
   )
   tryCatch(
@@ -652,8 +654,14 @@ add_ga_columns <- function(df, ga) {
   .append_p96(df, final_names)
 }
 
-fetch_agg <- function(stat_type, leagues, seasons, aggregate_seasons = FALSE) {
-  args <- player_args(leagues, seasons, aggregate_seasons)
+fetch_agg <- function(
+  stat_type,
+  leagues,
+  seasons,
+  aggregate_seasons = FALSE,
+  aggregate_teams = FALSE
+) {
+  args <- player_args(leagues, seasons, aggregate_seasons, aggregate_teams)
   log_call(paste0("get_player_", stat_type), leagues, seasons)
 
   tryCatch(
@@ -682,13 +690,23 @@ fetch_agg <- function(stat_type, leagues, seasons, aggregate_seasons = FALSE) {
           players
         }
         combined <- add_gk_save_pct(combined)
-        ga <- fetch_ga_totals(leagues, seasons, aggregate_seasons = aggregate_seasons)
+        ga <- fetch_ga_totals(
+          leagues,
+          seasons,
+          aggregate_seasons = aggregate_seasons,
+          aggregate_teams = aggregate_teams
+        )
         add_ga_columns(combined, ga)
       } else {
         switch(
           stat_type,
           goals_added = {
-            ga <- fetch_ga_totals(leagues, seasons, aggregate_seasons = aggregate_seasons)
+            ga <- fetch_ga_totals(
+              leagues,
+              seasons,
+              aggregate_seasons = aggregate_seasons,
+              aggregate_teams = aggregate_teams
+            )
             if (is.null(ga)) {
               NULL
             } else {
@@ -1020,6 +1038,16 @@ ui <- page_sidebar(
       )
     ),
 
+    # Always shown (unlike Aggregate across seasons) — whether a player has
+    # more than one team on file isn't known until after fetching, so there's
+    # no reliable input state to gate visibility on the way there is for
+    # season count.
+    checkboxInput(
+      "aggregate_teams",
+      "Aggregate across teams",
+      value = FALSE
+    ),
+
     numericInput(
       "min_minutes",
       "Minimum Minutes",
@@ -1115,14 +1143,20 @@ server <- function(input, output, session) {
   agg_data <- reactive(apply_min_minutes(agg_data_raw(), input$min_minutes))
   game_data <- reactive(apply_min_minutes(game_data_raw(), input$min_minutes))
 
-  do_fetch <- function() {
+  fetch_agg_now <- function() {
     req(input$leagues)
     agg_data_raw(fetch_agg(
       stat_type = input$agg_stat_type,
       leagues = input$leagues,
       seasons = input$seasons,
-      aggregate_seasons = isTRUE(input$aggregate_seasons)
+      aggregate_seasons = isTRUE(input$aggregate_seasons),
+      aggregate_teams = isTRUE(input$aggregate_teams)
     ))
+  }
+
+  do_fetch <- function() {
+    fetch_agg_now()
+    req(input$leagues)
     game_data_raw(fetch_games(
       leagues = input$leagues,
       seasons = input$seasons
@@ -1150,33 +1184,9 @@ server <- function(input, output, session) {
     ignoreNULL = FALSE
   )
 
-  observeEvent(
-    input$agg_stat_type,
-    {
-      req(input$leagues)
-      agg_data_raw(fetch_agg(
-        stat_type = input$agg_stat_type,
-        leagues = input$leagues,
-        seasons = input$seasons,
-        aggregate_seasons = isTRUE(input$aggregate_seasons)
-      ))
-    },
-    ignoreInit = TRUE
-  )
-
-  observeEvent(
-    input$aggregate_seasons,
-    {
-      req(input$leagues)
-      agg_data_raw(fetch_agg(
-        stat_type = input$agg_stat_type,
-        leagues = input$leagues,
-        seasons = input$seasons,
-        aggregate_seasons = isTRUE(input$aggregate_seasons)
-      ))
-    },
-    ignoreInit = TRUE
-  )
+  observeEvent(input$agg_stat_type, fetch_agg_now(), ignoreInit = TRUE)
+  observeEvent(input$aggregate_seasons, fetch_agg_now(), ignoreInit = TRUE)
+  observeEvent(input$aggregate_teams, fetch_agg_now(), ignoreInit = TRUE)
 
   observeEvent(input$fetch, {
     withProgress(message = "Fetching data from ASA…", value = 0, {
@@ -1235,18 +1245,19 @@ server <- function(input, output, session) {
       if (!is.null(gd) && "goals_minus_xgoals_gk" %in% names(gd)) {
         keys <- intersect(c("player_id", "team_id", "season_name"), names(gd))
         # game_data() is always per-game/per-team (never aggregated), so it
-        # always has season_name and team_id. But aggregating drops BOTH
-        # from the ratings df (one combined row per player, teams and
-        # seasons included), so both keys must be dropped here too —
-        # otherwise this table keeps multiple rows per player while df has
-        # one, and the join below fans that one row out into a copy per
-        # season/team. Keyed on the toggle itself, not on column presence —
-        # df always has a season_name (a real value when split, a
-        # concatenated label when aggregated), so presence alone can't
-        # distinguish the two anymore, and team_id is simply absent from
-        # gk_agg's join partner (names(df)) either way once dropped.
+        # always has season_name and team_id. But aggregating either one
+        # drops it from the ratings df (fewer rows per player), so the same
+        # key must be dropped here too — otherwise this table keeps
+        # multiple rows per player while df has fewer, and the join below
+        # fans a ratings row out into a copy per season/team. Keyed on the
+        # toggles themselves, not on column presence — df always has a
+        # season_name (a real value when split, a concatenated label when
+        # aggregated), so presence alone can't distinguish the two there.
         if (isTRUE(input$aggregate_seasons)) {
-          keys <- setdiff(keys, c("season_name", "team_id"))
+          keys <- setdiff(keys, "season_name")
+        }
+        if (isTRUE(input$aggregate_teams)) {
+          keys <- setdiff(keys, "team_id")
         }
         gd |>
           group_by(across(all_of(keys))) |>
