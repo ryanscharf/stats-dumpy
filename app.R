@@ -604,6 +604,17 @@ fetch_agg <- function(stat_type, leagues, seasons, aggregate_seasons = FALSE) {
           salaries = do.call(cached$get_player_salaries, args)
         )
       }
+      # Aggregating drops season_name from ASA's response entirely (there's
+      # no longer one row per season to label). Re-add it as a concatenated
+      # label of the seasons that went into the total, so it's still clear
+      # what's being shown rather than a silently missing column.
+      if (aggregate_seasons && !is.null(df) && !"season_name" %in% names(df)) {
+        df$season_name <- if (length(seasons) == 0) {
+          "All seasons"
+        } else {
+          paste(seasons, collapse = ", ")
+        }
+      }
       attach_names(df, leagues)
     },
     error = function(e) {
@@ -1108,11 +1119,14 @@ server <- function(input, output, session) {
         keys <- intersect(c("player_id", "team_id", "season_name"), names(gd))
         # game_data() is always per-game (never season-aggregated), so it
         # always has season_name. But if seasons are being aggregated
-        # together for the ratings df (df has no season_name), that key
-        # must be dropped here too — otherwise this table keeps one row per
-        # season while df has one row per player, and the join below fans
-        # each ratings row out into one copy per season.
-        if (!"season_name" %in% names(df)) {
+        # together for the ratings df, that key must be dropped here too —
+        # otherwise this table keeps one row per season while df has one
+        # row per player, and the join below fans each ratings row out into
+        # one copy per season. Keyed on the toggle itself, not on whether
+        # df has a season_name column — df always has one now (a real value
+        # when split, a concatenated label when aggregated), so column
+        # presence alone can't distinguish the two anymore.
+        if (isTRUE(input$aggregate_seasons)) {
           keys <- setdiff(keys, "season_name")
         }
         gd |>
