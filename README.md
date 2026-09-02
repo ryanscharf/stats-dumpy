@@ -18,6 +18,7 @@ The sidebar controls what gets fetched:
 
 - **Leagues** — one or more leagues to pull (default: USL Super League)
 - **Seasons** — blank means all seasons available for the selected league(s); options repopulate when you change leagues. Multi-year leagues (USL Championship, USL League One, USL Super League) are labeled `YYYY-yy` (e.g. `2025-26`) — except USL Super League from the 2026 season onward, which ASA labels as a plain `YYYY` year (`2026`, not `2026-27`), a break from its own prior convention. `SINGLE_YEAR_SEASON_FROM` in `app.R` controls the cutoff per league if this happens elsewhere too.
+- **Aggregate across seasons** — appears once 0 or 2+ seasons are selected (a single season has nothing to aggregate). Off by default: each selected season stays its own row (`split_by_seasons = TRUE` sent to ASA), same as picking one season at a time. Turn it on to combine the selected seasons into one row per player instead — useful for a multi-season total rather than a year-by-year breakdown. Team splits are unaffected either way: a player who changed teams still gets one row per team.
 - **Minimum Minutes** — filters small-sample players out of the currently loaded data instantly, with no re-fetch (see "Caching" below)
 - **Fetch Stats** — pulls the full league/season roster from ASA (or from cache, if already fetched recently)
 - **Force Refresh** — bypasses the cache and re-fetches from ASA immediately, for when you know something changed (e.g. right after a match)
@@ -39,7 +40,7 @@ The same xG/xPass/g+ shape as Aggregate Stats, but split out per player-per-game
 
 ### Player Cards
 
-A rated, position-grouped card view built on top of the Aggregate Stats ("xGoals + xPass") data. For each position group, players are:
+A rated, position-grouped card view built on top of the Aggregate Stats ("xGoals + xPass") data — including the Aggregate across seasons toggle, so a multi-season composite rating is one checkbox away from a year-by-year one. For each position group, players are:
 
 1. Filtered to those above the 25th-percentile of minutes played *within that position group* (so bit-part players don't clutter the rankings). This is a separate, stricter filter than the sidebar's Minimum Minutes — it's computed dynamically per position group, so a player can pass Minimum Minutes and still be excluded from cards. A "Hide low-minute outliers" checkbox above the cards (on by default) lets you turn this off to see everyone who otherwise met Minimum Minutes, including small-sample players whose per-96 rates are noisy.
 2. Scored on a 0–100 **composite** rating, computed from a different weighted blend of percentile ranks per position (see `compute_ratings()` in `app.R`):

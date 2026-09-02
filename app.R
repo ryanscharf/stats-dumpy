@@ -144,12 +144,12 @@ valid_seasons_for <- function(leagues) {
   seasons[order(substr(seasons, 1, 4), decreasing = TRUE)]
 }
 
-player_args <- function(leagues, seasons) {
+player_args <- function(leagues, seasons, aggregate_seasons = FALSE) {
   list(
     leagues = as.list(leagues),
     season_name = if (length(seasons) == 0) NULL else as.list(seasons),
     minimum_minutes = 0L,
-    split_by_seasons = TRUE,
+    split_by_seasons = !aggregate_seasons,
     split_by_teams = TRUE
   )
 }
@@ -443,12 +443,20 @@ compute_ratings <- function(
 #     player on the same six action types (goalkeepers get their own set)
 #   - goals_added, the sum of those components (matches the old behavior)
 #   - minutes_played
-fetch_ga_totals <- function(leagues, seasons, by_game = FALSE) {
+fetch_ga_totals <- function(
+  leagues,
+  seasons,
+  by_game = FALSE,
+  aggregate_seasons = FALSE
+) {
   args <- list(
     leagues = as.list(leagues),
     season_name = if (length(seasons) == 0) NULL else as.list(seasons),
     minimum_minutes = 0L,
-    split_by_seasons = TRUE,
+    # A single game already belongs to exactly one season, so the
+    # aggregate/split-by-season toggle only makes sense for the season-level
+    # (by_game = FALSE) fetch.
+    split_by_seasons = if (by_game) TRUE else !aggregate_seasons,
     split_by_teams = TRUE,
     split_by_games = by_game
   )
@@ -545,8 +553,8 @@ add_ga_columns <- function(df, ga) {
   .append_p96(df, final_names)
 }
 
-fetch_agg <- function(stat_type, leagues, seasons) {
-  args <- player_args(leagues, seasons)
+fetch_agg <- function(stat_type, leagues, seasons, aggregate_seasons = FALSE) {
+  args <- player_args(leagues, seasons, aggregate_seasons)
   log_call(paste0("get_player_", stat_type), leagues, seasons)
 
   tryCatch(
@@ -574,13 +582,13 @@ fetch_agg <- function(stat_type, leagues, seasons) {
         } else {
           players
         }
-        ga <- fetch_ga_totals(leagues, seasons)
+        ga <- fetch_ga_totals(leagues, seasons, aggregate_seasons = aggregate_seasons)
         add_ga_columns(combined, ga)
       } else {
         switch(
           stat_type,
           goals_added = {
-            ga <- fetch_ga_totals(leagues, seasons)
+            ga <- fetch_ga_totals(leagues, seasons, aggregate_seasons = aggregate_seasons)
             if (is.null(ga)) {
               NULL
             } else {
@@ -875,6 +883,15 @@ ui <- page_sidebar(
       options = list(placeholder = "All seasons")
     ),
 
+    conditionalPanel(
+      condition = "input.seasons.length != 1",
+      checkboxInput(
+        "aggregate_seasons",
+        "Aggregate across seasons",
+        value = FALSE
+      )
+    ),
+
     numericInput(
       "min_minutes",
       "Minimum Minutes",
@@ -975,7 +992,8 @@ server <- function(input, output, session) {
     agg_data_raw(fetch_agg(
       stat_type = input$agg_stat_type,
       leagues = input$leagues,
-      seasons = input$seasons
+      seasons = input$seasons,
+      aggregate_seasons = isTRUE(input$aggregate_seasons)
     ))
     game_data_raw(fetch_games(
       leagues = input$leagues,
@@ -1011,7 +1029,22 @@ server <- function(input, output, session) {
       agg_data_raw(fetch_agg(
         stat_type = input$agg_stat_type,
         leagues = input$leagues,
-        seasons = input$seasons
+        seasons = input$seasons,
+        aggregate_seasons = isTRUE(input$aggregate_seasons)
+      ))
+    },
+    ignoreInit = TRUE
+  )
+
+  observeEvent(
+    input$aggregate_seasons,
+    {
+      req(input$leagues)
+      agg_data_raw(fetch_agg(
+        stat_type = input$agg_stat_type,
+        leagues = input$leagues,
+        seasons = input$seasons,
+        aggregate_seasons = isTRUE(input$aggregate_seasons)
       ))
     },
     ignoreInit = TRUE
@@ -1073,6 +1106,15 @@ server <- function(input, output, session) {
       gd <- game_data()
       if (!is.null(gd) && "goals_minus_xgoals_gk" %in% names(gd)) {
         keys <- intersect(c("player_id", "team_id", "season_name"), names(gd))
+        # game_data() is always per-game (never season-aggregated), so it
+        # always has season_name. But if seasons are being aggregated
+        # together for the ratings df (df has no season_name), that key
+        # must be dropped here too — otherwise this table keeps one row per
+        # season while df has one row per player, and the join below fans
+        # each ratings row out into one copy per season.
+        if (!"season_name" %in% names(df)) {
+          keys <- setdiff(keys, "season_name")
+        }
         gd |>
           group_by(across(all_of(keys))) |>
           summarise(
